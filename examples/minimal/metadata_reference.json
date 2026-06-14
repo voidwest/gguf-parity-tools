@@ -1,0 +1,17 @@
+{
+  "engine": "reference-engine",
+  "model": "toy.gguf",
+  "prompts": [
+    {
+      "index": 0,
+      "prompt": "Hello",
+      "token_ids": [1, 2]
+    },
+    {
+      "index": 1,
+      "prompt": "The capital of Saudi Arabia is",
+      "token_ids": [3, 4, 5, 6, 7, 8]
+    }
+  ]
+}
+
