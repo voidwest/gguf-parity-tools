@@ -153,6 +153,7 @@ int main(int argc, char ** argv) {
     llama_batch batch = llama_batch_get_one(toks, n_tokens);
     if (llama_decode(ctx, batch) != 0) {
         fprintf(stderr, "error: decode failed\n");
+        remove(out_path);
         llama_free(ctx);
         llama_model_free(model);
         llama_backend_free();
@@ -188,6 +189,7 @@ int main(int argc, char ** argv) {
             fclose(fp);
             if (written != (size_t)n_embd) {
                 fprintf(stderr, "error: failed to write final hidden state to %s\n", out_path);
+                remove(out_path);
                 llama_free(ctx);
                 llama_model_free(model);
                 llama_backend_free();
