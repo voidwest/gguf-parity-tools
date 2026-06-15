@@ -54,6 +54,15 @@ Run shape:
 ./dump_llamacpp_layers model.gguf "" llama_layers.bin 16
 ```
 
+The helper treats `llama_layers.bin` as the success contract. If the patched
+decode path does not create a non-empty output file, the helper exits non-zero
+instead of silently writing a single final hidden-state row. For debugging only,
+pass `--allow-fallback` to write that single-row fallback:
+
+```bash
+./dump_llamacpp_layers model.gguf "" final_hidden.bin 16 --allow-fallback
+```
+
 Then compare:
 
 ```bash
@@ -70,4 +79,3 @@ gguf-parity compare-layers \
 Layer dumps only help if both engines capture the same tensor boundary. The
 metadata should name the capture point precisely: pre-norm, post-attention,
 post-residual, post-layer-scale, or final block output.
-

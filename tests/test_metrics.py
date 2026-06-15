@@ -34,6 +34,12 @@ class MetricTests(unittest.TestCase):
         report = compare_logits(candidate, reference, top_k=1, thresholds=LogitThresholds(require_top1=True))
         self.assertEqual(report["status"], "fail")
 
+    def test_compare_logits_warns_top1_mismatch_when_not_required(self) -> None:
+        candidate = np.array([[0.0, 3.0, 2.0]], dtype=np.float32)
+        reference = np.array([[0.0, 2.0, 3.0]], dtype=np.float32)
+        report = compare_logits(candidate, reference, top_k=2, thresholds=LogitThresholds(min_topk_overlap=1.0))
+        self.assertEqual(report["status"], "warn")
+
     def test_compare_logits_shape_mismatch_fails_cleanly(self) -> None:
         candidate = np.zeros((1, 3), dtype=np.float32)
         reference = np.zeros((2, 3), dtype=np.float32)
@@ -81,6 +87,21 @@ class MetricTests(unittest.TestCase):
         report = audit_tokens(candidate, reference)
         self.assertEqual(report["status"], "fail")
         self.assertFalse(report["rows"][0]["token_ids_match"])
+
+    def test_token_audit_marks_missing_rows_as_mismatches(self) -> None:
+        candidate = {"prompts": [{"prompt": "Hello", "token_ids": [1, 2]}]}
+        reference = {
+            "prompts": [
+                {"prompt": "Hello", "token_ids": [1, 2]},
+                {"prompt": "Bye", "token_ids": [3, 4]},
+            ]
+        }
+        report = audit_tokens(candidate, reference)
+        self.assertEqual(report["status"], "fail")
+        self.assertFalse(report["rows"][1]["candidate_present"])
+        self.assertTrue(report["rows"][1]["reference_present"])
+        self.assertFalse(report["rows"][1]["prompt_match"])
+        self.assertFalse(report["rows"][1]["token_ids_match"])
 
 
 class LoaderTests(unittest.TestCase):
@@ -133,6 +154,30 @@ class CliTests(unittest.TestCase):
             self.assertTrue((out / "summary.md").exists())
             report = json.loads((out / "report.json").read_text())
             self.assertEqual(report["status"], "pass")
+
+    def test_compare_logits_cli_strict_exits_nonzero_on_warn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate = root / "candidate.npy"
+            reference = root / "reference.npy"
+            np.save(candidate, np.array([[0.0, 3.0, 2.0]], dtype=np.float32))
+            np.save(reference, np.array([[0.0, 2.0, 3.0]], dtype=np.float32))
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "parity_tools",
+                "compare-logits",
+                "--candidate",
+                str(candidate),
+                "--reference",
+                str(reference),
+                "--min-topk-overlap",
+                "1.0",
+                "--strict",
+            ]
+            result = subprocess.run(cmd, check=False, cwd=Path(__file__).resolve().parents[1], capture_output=True)
+            self.assertEqual(result.returncode, 1)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@
 /// ## Prerequisites
 ///
 /// This tool requires a patched llama.cpp with per-layer state capture enabled.
-/// Three source files must be modified:
+/// Four source files must be modified:
 ///
 ///   1. `src/llama-graph.h` — add `std::vector<ggml_tensor*> t_all_layers;`
 ///      to `llm_graph_result`.
@@ -32,7 +32,7 @@
 ///   4. `src/models/gemma4.cpp` (or the target model) — add
 ///      `res->t_all_layers.push_back(cur);` at the per-layer block output point.
 ///
-/// See `docs/layer-dump-tooling.md` for exact patches.
+/// See `docs/llamacpp-layer-dump.md` for exact patches.
 ///
 /// ## Build
 ///
@@ -49,13 +49,16 @@
 ///
 /// ## Usage
 ///
-///   ./dump_llamacpp_layers <model.gguf> <prompt> <out.bin> [ctx_size]
+///   ./dump_llamacpp_layers <model.gguf> <prompt> <out.bin> [ctx_size] [--allow-fallback]
 ///
 /// Arguments:
 ///   model.gguf   path to GGUF model
 ///   prompt       text prompt (use "" for BOS-only)
 ///   out.bin      path for binary output
 ///   ctx_size     context size (default: 16)
+///   --allow-fallback
+///                write a single final hidden-state row if the patched
+///                per-layer dump path does not create out.bin
 
 #include "llama.h"
 #include <cstdio>
@@ -63,15 +66,41 @@
 #include <cstring>
 #include <vector>
 
+static bool file_exists_nonempty(const char * path) {
+    FILE * fp = fopen(path, "rb");
+    if (!fp) {
+        return false;
+    }
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return false;
+    }
+    long size = ftell(fp);
+    fclose(fp);
+    return size > 0;
+}
+
 int main(int argc, char ** argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <model.gguf> <prompt> <out.bin> [ctx_size]\n", argv[0]);
+        fprintf(stderr, "usage: %s <model.gguf> <prompt> <out.bin> [ctx_size] [--allow-fallback]\n", argv[0]);
         return 1;
     }
     const char * model_path = argv[1];
     const char * prompt     = argv[2];
     const char * out_path   = argv[3];
-    int          ctx_size   = (argc >= 5) ? atoi(argv[4]) : 16;
+    int          ctx_size   = 16;
+    bool         allow_fallback = false;
+
+    for (int i = 4; i < argc; ++i) {
+        if (strcmp(argv[i], "--allow-fallback") == 0) {
+            allow_fallback = true;
+        } else if (i == 4) {
+            ctx_size = atoi(argv[i]);
+        } else {
+            fprintf(stderr, "error: unknown argument: %s\n", argv[i]);
+            return 1;
+        }
+    }
 
     // --- backend init ---
     llama_backend_init();
@@ -81,6 +110,7 @@ int main(int argc, char ** argv) {
     llama_model * model = llama_model_load_from_file(model_path, mp);
     if (!model) {
         fprintf(stderr, "error: failed to load model %s\n", model_path);
+        llama_backend_free();
         return 1;
     }
 
@@ -92,6 +122,7 @@ int main(int argc, char ** argv) {
     if (!ctx) {
         fprintf(stderr, "error: failed to create context\n");
         llama_model_free(model);
+        llama_backend_free();
         return 1;
     }
 
@@ -110,9 +141,13 @@ int main(int argc, char ** argv) {
             fprintf(stderr, "error: tokenize failed\n");
             llama_free(ctx);
             llama_model_free(model);
+            llama_backend_free();
             return 1;
         }
     }
+
+    // Avoid treating a stale output file from a previous run as success.
+    remove(out_path);
 
     // --- decode ---
     llama_batch batch = llama_batch_get_one(toks, n_tokens);
@@ -120,27 +155,59 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "error: decode failed\n");
         llama_free(ctx);
         llama_model_free(model);
+        llama_backend_free();
         return 1;
     }
 
-    // The patched llama.cpp writes per-layer states to llama_35layers.bin
-    // (or the equivalent file for other architectures) during decode.
-    // This tool does not read that file — the patched decode path handles
-    // the write directly.
+    // The patched llama.cpp path is expected to write the requested output file
+    // during decode.
+    if (file_exists_nonempty(out_path)) {
+        fprintf(stderr, "info: patched llama.cpp wrote per-layer states to %s\n", out_path);
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 0;
+    }
 
     // For unpatched builds, dump the final hidden state as a fallback.
+    if (!allow_fallback) {
+        fprintf(stderr, "error: patched llama.cpp required for per-layer states; no output written to %s\n", out_path);
+        fprintf(stderr, "hint: pass --allow-fallback to write only the final hidden state for debugging\n");
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 2;
+    }
+
     float * embd = llama_get_embeddings_ith(ctx, n_tokens - 1);
     if (embd) {
         int n_embd = llama_model_n_embd(model);
         FILE * fp = fopen(out_path, "wb");
         if (fp) {
-            fwrite(embd, sizeof(float), n_embd, fp);
+            size_t written = fwrite(embd, sizeof(float), n_embd, fp);
             fclose(fp);
+            if (written != (size_t)n_embd) {
+                fprintf(stderr, "error: failed to write final hidden state to %s\n", out_path);
+                llama_free(ctx);
+                llama_model_free(model);
+                llama_backend_free();
+                return 1;
+            }
             fprintf(stderr, "info: wrote final hidden state (%d floats) to %s\n", n_embd, out_path);
             fprintf(stderr, "warn: patched llama.cpp required for per-layer states\n");
+        } else {
+            fprintf(stderr, "error: failed to open %s\n", out_path);
+            llama_free(ctx);
+            llama_model_free(model);
+            llama_backend_free();
+            return 1;
         }
     } else {
-        fprintf(stderr, "warn: no embeddings available\n");
+        fprintf(stderr, "error: no embeddings available\n");
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 1;
     }
 
     llama_free(ctx);

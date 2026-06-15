@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     logits.add_argument("--min-cosine", type=float)
     logits.add_argument("--min-topk-overlap", type=float, default=0.8)
     logits.add_argument("--require-top1", action="store_true")
+    logits.add_argument("--strict", action="store_true", help="exit non-zero on warn status as well as fail")
     logits.add_argument("--out", help="output directory for report bundle")
     logits.set_defaults(func=cmd_compare_logits)
 
@@ -74,7 +75,7 @@ def cmd_compare_logits(args: argparse.Namespace) -> int:
         write_report_bundle(report, args.out)
     else:
         print(markdown_summary(report))
-    return 1 if report["status"] == "fail" else 0
+    return 1 if report["status"] == "fail" or (args.strict and report["status"] == "warn") else 0
 
 
 def cmd_compare_layers(args: argparse.Namespace) -> int:

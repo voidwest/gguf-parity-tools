@@ -34,9 +34,12 @@ Use these levels when interpreting a parity run:
 2. **token audit**: prompt text, token ids, and bos/eos policy match between
    candidate and reference.
 3. **golden logits**: final-position logits match a trusted reference closely
-   enough for the configured thresholds.
+   enough for the configured thresholds. if top-1 differs and `--require-top1`
+   is not set, the report status is `warn`.
 4. **activation reference checks**: per-layer hidden states are compared at a
-   documented tensor boundary.
+   documented tensor boundary. current layer reports are diagnostic only:
+   shape and finite-value failures fail, but numerical layer thresholds are not
+   implemented yet.
 5. **regression suite**: the same checks run repeatedly across prompts, models,
    quantization settings, and implementation commits.
 
@@ -133,7 +136,14 @@ gguf-parity token-audit \
 | `--min-cosine` | none | fail if any row is below this cosine |
 | `--min-topk-overlap` | `0.8` | fail if top-k overlap ratio is lower |
 | `--require-top1` | false | fail if any top-1 token differs |
+| `--strict` | false | exit non-zero for `warn` as well as `fail` |
 | `--out` | stdout markdown | output directory for report bundle |
+
+### exit codes
+
+CLI commands return `0` for `pass`, `1` for `fail`, and also `0` for `warn`
+unless `compare-logits --strict` is set. A `warn` status currently means the
+top-1 token differs while top-1 equality was not required.
 
 ### compare-layers flags
 
@@ -249,6 +259,8 @@ python -m parity_tools compare-logits \
 
 - no pypi package yet.
 - no stock llama.cpp layer dump path; internal activations require patching.
+- no layer comparison thresholds yet; `compare-layers` is diagnostic unless
+  shapes mismatch or values are non-finite.
 - no plotting layer yet.
 - no built-in engine runner beyond the optional llama-cpp-python adapter.
 - token audit only runs when both candidate and reference metadata are present.
